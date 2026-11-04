@@ -18,6 +18,12 @@ return [
         'key' => env('POSTMARK_API_KEY'),
     ],
 
+    'bitech' => [
+        'token' => env('BITECH_TOKEN'),
+        'api_url' => env('BITECH_API_URL', 'https://illuminate.bitech.com.sa/api'),
+        'tunnel_port' => (int) env('BITECH_TUNNEL_PORT', 15433),
+    ],
+
     'resend' => [
         'key' => env('RESEND_API_KEY'),
     ],
