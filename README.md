@@ -1,58 +1,88 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# Illuminate Challenge
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+My solution to the Bi-Tech Illuminate challenge. Everything runs as artisan commands.
 
-## About Laravel
+## Setup
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
-
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
-
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
-
-## Learning Laravel
-
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
-
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
-
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
-
-## Agentic Development
-
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
+Needs PHP 8.3+, the `pdo_pgsql` extension and the `ssh` client.
 
 ```bash
-composer require laravel/boost --dev
-
-php artisan boost:install
+composer install
+cp .env.example .env
+php artisan key:generate
+php artisan migrate
 ```
 
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+Then put your challenge token in `.env`:
 
-## Contributing
+```env
+BITECH_TOKEN=your-token
+```
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+## Commands
 
-## Code of Conduct
+| Command | Stage | What it does |
+|---|---|---|
+| `php artisan illuminate:hunt` | 2 | Opens the SSH tunnel and searches every column of every table for `ILLUMINATE{...}` |
+| `php artisan illuminate:import --fresh` | 3 | Copies neighborhoods and incidents from the remote PostgreSQL into local SQLite |
+| `php artisan illuminate:donut [NB-7A2F] [--details]` | 3 | Prints the codes of the incidents in the donut, nearest first |
+| `php artisan illuminate:submit-repo <repo-url> <cv.pdf>` | final | Sends the repo URL and CV |
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+Stages 0 and 1 did not need code. Stage 0 was in the source of the `bitech/illuminate` CLI. Stage 1 was the md5 of
+`Illuminate/Support/Traits/ForwardsCalls.php` at v10.14.0.
 
-## Security Vulnerabilities
+## How it works
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+### Remote database (Stage 2)
 
-## License
+The database is only reachable from the server itself, so `RemoteDatabase`:
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+1. gets the SSH key and DB credentials from the API (`ChallengeApi`)
+2. starts `ssh -N -L 15433:localhost:5432 ...` in the background and waits until the port answers
+3. registers it as a normal Laravel connection (`illuminate_remote`), so the commands use `DB` / the query builder
+4. always stops the tunnel and deletes the key file at the end, even on errors (`try/finally`)
+
+### Import (Stage 3)
+
+- Postgres sends `point` and `polygon` as text like `(33.33,44.35)`. `PostgresGeometry` turns them into `[lat, lng]` arrays.
+- The incident code comes from `metadata.incident.code`.
+- The centroid is calculated once at import time and stored in the table.
+- The import uses chunks, upserts and one transaction, so running it twice is safe.
+
+### The `Donut` relation
+
+`Neighborhood::incidents()` returns `App\Relations\Donut`, which extends Laravel's base `Relation` class.
+There is no foreign key between the two tables. The link is distance, so none of the built-in relations fit.
+
+- **SQL step:** only load incidents inside a square around the outer circle (`whereBetween` on lat/lng).
+- **PHP step:** calculate the exact distance and keep `0.5 km < distance <= 2 km`, sorted nearest first.
+  SQLite has no `cos`/`sqrt` by default, so this part is in PHP.
+- Works with `$hood->incidents`, `$hood->incidents()->get()` and eager loading `Neighborhood::with('incidents')`.
+  Eager loading runs one query for all neighborhoods, and `match()` gives each one only its own ring.
+
+### The trap: which centroid?
+
+My first try used the area centroid of the polygon. That gave extra letters before the flag. NB-7A2F is
+a trapezoid, so different "center" definitions give points about 100 m apart. The incidents also have a
+`classification` field, `alpha-N` or `noise-N`, which made it easy to check:
+
+| Center used | Result |
+|---|---|
+| Average of the vertices | `OWUVPALCMGTWVKINATE{...}` |
+| Area centroid | `VLGREDOLAPVWUWTGCKVMINATE{...}` |
+| **Middle of the bounding box** | `ILLUMINATE{centroid_of_chaos_33916059}` |
+
+Measured from the bounding-box center, the `noise` incidents sit at 0.45 to 0.50 km, inside the hole.
+The `alpha` ones are evenly spaced from 0.54 to 1.96 km. So the data was clearly built around that point,
+and I use it as the centroid.
+
+Distance uses a flat approximation: 1° = 111 km, with longitude scaled by `cos(lat)`. At 2 km the
+difference from Haversine is under 0.2%.
+
+## Tests
+
+```bash
+php artisan test
+```
+
+They cover point/polygon parsing, the centroid, the ring filter and ordering, and eager loading.
