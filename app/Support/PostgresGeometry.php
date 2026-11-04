@@ -35,21 +35,4 @@ final class PostgresGeometry
 
         return array_map(fn (array $p) => [(float) $p[1], (float) $p[2]], $m);
     }
-
-    /**
-     * Postgres text[] literal, e.g. {accident,resolved} or {"a b","c"}.
-     *
-     * @return list<string>
-     */
-    public static function textArray(?string $value): array
-    {
-        if ($value === null || trim($value, '{} ') === '') {
-            return [];
-        }
-
-        return array_map(
-            fn (string $item) => stripcslashes($item),
-            str_getcsv(substr(trim($value), 1, -1), ',', '"', '\\'),
-        );
-    }
 }

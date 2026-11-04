@@ -4,80 +4,54 @@ declare(strict_types=1);
 
 namespace App\Support;
 
-use InvalidArgumentException;
-
-final class Geo
+class Geo
 {
-    public const EARTH_RADIUS_KM = 6371.0;
+    // 1 degree of latitude is about 111 km.
+    public const KM_PER_DEGREE = 111.0;
 
     /**
-     * Great-circle distance between two points, in km.
+     * Distance in km between two points.
+     *
+     * Neighborhoods are only a few km wide, so we can treat the area as flat:
+     * convert the lat/lng difference to km and use Pythagoras.
+     * Longitude degrees get shorter away from the equator, hence the cos().
      */
-    public static function haversine(float $lat1, float $lng1, float $lat2, float $lng2): float
+    public static function distanceKm(float $lat1, float $lng1, float $lat2, float $lng2): float
     {
-        $dLat = deg2rad($lat2 - $lat1);
-        $dLng = deg2rad($lng2 - $lng1);
+        $dy = ($lat2 - $lat1) * self::KM_PER_DEGREE;
+        $dx = ($lng2 - $lng1) * self::KM_PER_DEGREE * cos(deg2rad($lat1));
 
-        $a = sin($dLat / 2) ** 2
-            + cos(deg2rad($lat1)) * cos(deg2rad($lat2)) * sin($dLng / 2) ** 2;
-
-        return 2 * self::EARTH_RADIUS_KM * asin(min(1.0, sqrt($a)));
+        return sqrt($dx ** 2 + $dy ** 2);
     }
 
     /**
-     * Area-weighted centroid of a simple polygon (shoelace formula).
+     * Center of the polygon = middle of its bounding box.
      *
-     * Averaging the vertices only works for regular shapes; NB-7A2F is a
-     * trapezoid, so the vertex mean is pulled towards the short side.
-     *
-     * @param  list<array{0: float, 1: float}>  $vertices  [lat, lng] pairs
+     * @param  array<int, array{0: float, 1: float}>  $points  [lat, lng] pairs
      * @return array{0: float, 1: float}
      */
-    public static function centroid(array $vertices): array
+    public static function centroid(array $points): array
     {
-        $n = count($vertices);
+        $lats = array_column($points, 0);
+        $lngs = array_column($points, 1);
 
-        if ($n < 3) {
-            throw new InvalidArgumentException('A polygon needs at least 3 vertices.');
-        }
-
-        $area = $cx = $cy = 0.0;
-
-        for ($i = 0; $i < $n; $i++) {
-            [$x0, $y0] = $vertices[$i];
-            [$x1, $y1] = $vertices[($i + 1) % $n];
-
-            $cross = $x0 * $y1 - $x1 * $y0;
-            $area += $cross;
-            $cx += ($x0 + $x1) * $cross;
-            $cy += ($y0 + $y1) * $cross;
-        }
-
-        if (abs($area) < 1e-12) {
-            throw new InvalidArgumentException('Degenerate polygon (zero area).');
-        }
-
-        $area /= 2;
-
-        return [$cx / (6 * $area), $cy / (6 * $area)];
+        return [
+            (min($lats) + max($lats)) / 2,
+            (min($lngs) + max($lngs)) / 2,
+        ];
     }
 
     /**
-     * Rough lat/lng box that fully contains a circle of $km around a point.
-     * Used to let the database discard far-away rows before the exact check.
+     * A square around a point that contains the whole circle of $km.
+     * Lets SQL throw away far rows before we calculate exact distances.
      *
-     * @return array{minLat: float, maxLat: float, minLng: float, maxLng: float}
+     * @return array{0: float, 1: float, 2: float, 3: float} [minLat, maxLat, minLng, maxLng]
      */
-    public static function boundingBox(float $lat, float $lng, float $km): array
+    public static function box(float $lat, float $lng, float $km): array
     {
-        $dLat = rad2deg($km / self::EARTH_RADIUS_KM);
-        $dLng = rad2deg($km / (self::EARTH_RADIUS_KM * cos(deg2rad($lat))));
+        $dLat = $km / self::KM_PER_DEGREE;
+        $dLng = $km / (self::KM_PER_DEGREE * cos(deg2rad($lat)));
 
-        return [
-            'minLat' => $lat - $dLat,
-            'maxLat' => $lat + $dLat,
-            'minLng' => $lng - $dLng,
-            'maxLng' => $lng + $dLng,
-        ];
+        return [$lat - $dLat, $lat + $dLat, $lng - $dLng, $lng + $dLng];
     }
 }

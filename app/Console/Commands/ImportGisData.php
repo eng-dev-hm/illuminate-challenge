@@ -75,7 +75,7 @@ class ImportGisData extends Command
                 id,
                 location::text AS location,
                 metadata::text AS metadata,
-                tags::text AS tags,
+                array_to_json(tags)::text AS tags,
                 array_to_json(reports)::text AS reports,
                 occurred_at
             SQL)
@@ -91,7 +91,7 @@ class ImportGisData extends Command
                         'lng' => $lng,
                         'code' => data_get($metadata, 'incident.code'),
                         'metadata' => $row->metadata,
-                        'tags' => json_encode(PostgresGeometry::textArray($row->tags)),
+                        'tags' => $row->tags,
                         'reports' => $row->reports,
                         'occurred_at' => $row->occurred_at,
                     ];

@@ -43,11 +43,6 @@ class Neighborhood extends Model
      */
     public function incidents(): Donut
     {
-        return new Donut(
-            Incident::query(),
-            $this,
-            innerKm: self::DONUT_INNER_KM,
-            outerKm: self::DONUT_OUTER_KM,
-        );
+        return new Donut($this, innerKm: self::DONUT_INNER_KM, outerKm: self::DONUT_OUTER_KM);
     }
 }

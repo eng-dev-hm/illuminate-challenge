@@ -10,79 +10,59 @@ use App\Support\Geo;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Relations\Relation;
-use InvalidArgumentException;
-use LogicException;
 
 /**
- * Neighborhood -> incidents lying in a ring (annulus) around its centroid.
+ * Incidents that are between $innerKm and $outerKm from a neighborhood's center.
  *
- * There is no foreign key between the two tables, the link is purely
- * geometric, so none of the built-in relations fit.
+ * There is no foreign key between the tables, so we extend the base Relation
+ * class (the same parent HasOne / BelongsToMany use) and decide ourselves
+ * which incidents belong to which neighborhood.
  *
- * Two passes:
- *  1. SQL: a lat/lng bounding box around the outer circle. Cheap, uses the
- *     (lat, lng) index and throws away almost everything.
- *  2. PHP: exact haversine distance, keep inner <= d <= outer, sort by d.
- *
- * SQLite has no trig functions by default, which is why step 2 is not SQL.
- *
- * @extends Relation<Incident, Neighborhood, Collection<int, Incident>>
+ * 1. SQL keeps only incidents inside a square around the outer circle.
+ * 2. PHP calculates the exact distance, keeps the ring, sorts nearest first.
  */
 class Donut extends Relation
 {
     public function __construct(
-        Builder $query,
-        Neighborhood $parent,
-        protected readonly float $innerKm,
-        protected readonly float $outerKm,
+        Neighborhood $neighborhood,
+        protected float $innerKm,
+        protected float $outerKm,
     ) {
-        if ($innerKm < 0 || $outerKm <= $innerKm) {
-            throw new InvalidArgumentException('Expected 0 <= inner < outer.');
-        }
-
-        parent::__construct($query, $parent);
+        parent::__construct(Incident::query(), $neighborhood);
     }
 
+    /** Used for $neighborhood->incidents (one neighborhood). */
     public function addConstraints(): void
     {
         if (static::$constraints) {
-            $this->whereInBox($this->query, $this->parent);
+            $this->whereInsideBox($this->query, $this->parent);
         }
     }
 
-    /** @param  array<int, Neighborhood>  $models */
+    /** Used for Neighborhood::with('incidents') (many neighborhoods, one query). */
     public function addEagerConstraints(array $models): void
     {
-        $this->query->where(function (Builder $q) use ($models) {
-            foreach ($models as $model) {
-                $q->orWhere(fn (Builder $box) => $this->whereInBox($box, $model));
+        $this->query->where(function (Builder $query) use ($models) {
+            foreach ($models as $neighborhood) {
+                $query->orWhere(fn (Builder $q) => $this->whereInsideBox($q, $neighborhood));
             }
         });
     }
 
-    /** @param  array<int, Neighborhood>  $models */
     public function initRelation(array $models, $relation): array
     {
-        foreach ($models as $model) {
-            $model->setRelation($relation, $this->related->newCollection());
+        foreach ($models as $neighborhood) {
+            $neighborhood->setRelation($relation, $this->related->newCollection());
         }
 
         return $models;
     }
 
-    /**
-     * The eager query returns the union of every parent's box; each parent
-     * keeps only the incidents that are really inside its own ring.
-     *
-     * @param  array<int, Neighborhood>  $models
-     */
+    /** Give each neighborhood only the incidents inside its own ring. */
     public function match(array $models, Collection $results, $relation): array
     {
-        foreach ($models as $model) {
-            // Clone so distance_km is per neighborhood when rings overlap.
-            $own = $results->map(fn (Incident $incident) => clone $incident);
-
-            $model->setRelation($relation, $this->ring($own, $model));
+        foreach ($models as $neighborhood) {
+            $neighborhood->setRelation($relation, $this->ring($results, $neighborhood));
         }
 
         return $models;
@@ -94,48 +74,48 @@ class Donut extends Relation
     }
 
     /**
-     * Relation::get() goes straight to the builder, which would return the
-     * whole bounding box. Apply the ring filter here too, so that
-     * $neighborhood->incidents()->get() and ->incidents behave the same.
+     * Relation::get() would return the whole square, so filter it here too.
+     * Now $neighborhood->incidents and ->incidents()->get() give the same result.
      */
     public function get($columns = ['*']): Collection
     {
         return $this->ring($this->query->get($columns), $this->parent);
     }
 
-    /** Eager loading must get the raw box rows; match() does the filtering. */
+    /** Eager loading: return all rows, match() does the per-neighborhood filtering. */
     public function getEager(): Collection
     {
         return $this->query->get();
     }
 
-    public function getRelationExistenceQuery(Builder $query, Builder $parentQuery, $columns = ['*']): Builder
+    protected function whereInsideBox(Builder $query, Neighborhood $neighborhood): void
     {
-        throw new LogicException('has()/whereHas() are not supported on a distance relation.');
+        [$minLat, $maxLat, $minLng, $maxLng] = Geo::box(
+            $neighborhood->centroid_lat,
+            $neighborhood->centroid_lng,
+            $this->outerKm,
+        );
+
+        $query->whereBetween('lat', [$minLat, $maxLat])
+            ->whereBetween('lng', [$minLng, $maxLng]);
     }
 
-    protected function whereInBox(Builder $query, Neighborhood $neighborhood): void
-    {
-        $box = Geo::boundingBox($neighborhood->centroid_lat, $neighborhood->centroid_lng, $this->outerKm);
-
-        $query->whereBetween('lat', [$box['minLat'], $box['maxLat']])
-            ->whereBetween('lng', [$box['minLng'], $box['maxLng']]);
-    }
-
-    /**
-     * @param  Collection<int, Incident>  $incidents
-     * @return Collection<int, Incident>
-     */
+    /** Keep incidents where inner < distance <= outer, nearest first. */
     protected function ring(Collection $incidents, Neighborhood $neighborhood): Collection
     {
         return $incidents
-            ->each(fn (Incident $i) => $i->setAttribute('distance_km', Geo::haversine(
-                $neighborhood->centroid_lat,
-                $neighborhood->centroid_lng,
-                $i->lat,
-                $i->lng,
-            )))
-            ->filter(fn (Incident $i) => $i->distance_km >= $this->innerKm && $i->distance_km <= $this->outerKm)
+            ->map(function (Incident $incident) use ($neighborhood) {
+                $incident = clone $incident; // a neighbor's ring may share this incident
+                $incident->distance_km = Geo::distanceKm(
+                    $neighborhood->centroid_lat,
+                    $neighborhood->centroid_lng,
+                    $incident->lat,
+                    $incident->lng,
+                );
+
+                return $incident;
+            })
+            ->filter(fn (Incident $i) => $i->distance_km > $this->innerKm && $i->distance_km <= $this->outerKm)
             ->sortBy('distance_km')
             ->values();
     }
