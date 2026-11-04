@@ -2,9 +2,15 @@
 
 My solution to the Bi-Tech Illuminate challenge. Everything runs as artisan commands.
 
-## Setup
+## Requirements
 
-Needs PHP 8.3+, the `pdo_pgsql` extension and the `ssh` client.
+- PHP 8.3+ with the `pdo_sqlite` and `pdo_pgsql` extensions
+- Composer
+- The `ssh` command
+
+## How to run
+
+**1. Install**
 
 ```bash
 composer install
@@ -13,76 +19,137 @@ php artisan key:generate
 php artisan migrate
 ```
 
-Then put your challenge token in `.env`:
+**2. Add your token** to `.env`
 
 ```env
 BITECH_TOKEN=your-token
 ```
 
-## Commands
+**3. Stage 2: find the flag in the remote database**
 
-| Command | Stage | What it does |
-|---|---|---|
-| `php artisan illuminate:hunt` | 2 | Opens the SSH tunnel and searches every column of every table for `ILLUMINATE{...}` |
-| `php artisan illuminate:import --fresh` | 3 | Copies neighborhoods and incidents from the remote PostgreSQL into local SQLite |
-| `php artisan illuminate:donut [NB-7A2F] [--details]` | 3 | Prints the codes of the incidents in the donut, nearest first |
-| `php artisan illuminate:submit-repo <repo-url> <cv.pdf>` | final | Sends the repo URL and CV |
+```bash
+php artisan illuminate:hunt
+```
 
-Stages 0 and 1 did not need code. Stage 0 was in the source of the `bitech/illuminate` CLI. Stage 1 was the md5 of
-`Illuminate/Support/Traits/ForwardsCalls.php` at v10.14.0.
+**4. Stage 3: import the data, then get the flag from the donut**
 
-## How it works
+```bash
+php artisan illuminate:import --fresh
+php artisan illuminate:donut
+```
 
-### Remote database (Stage 2)
+Add `--details` to see every incident with its distance:
 
-The database is only reachable from the server itself, so `RemoteDatabase`:
+```bash
+php artisan illuminate:donut NB-7A2F --details
+```
 
-1. gets the SSH key and DB credentials from the API (`ChallengeApi`)
-2. starts `ssh -N -L 15433:localhost:5432 ...` in the background and waits until the port answers
-3. registers it as a normal Laravel connection (`illuminate_remote`), so the commands use `DB` / the query builder
-4. always stops the tunnel and deletes the key file at the end, even on errors (`try/finally`)
+**5. Submit the repo and CV**
 
-### Import (Stage 3)
+```bash
+php artisan illuminate:submit-repo https://github.com/<user>/<repo> /path/to/cv.pdf
+```
 
-- Postgres sends `point` and `polygon` as text like `(33.33,44.35)`. `PostgresGeometry` turns them into `[lat, lng]` arrays.
-- The incident code comes from `metadata.incident.code`.
-- The centroid is calculated once at import time and stored in the table.
-- Everything runs in one transaction with `updateOrCreate`, so running it twice is safe.
-
-### The `Donut` relation
-
-`Neighborhood::incidents()` returns `App\Relations\Donut`, which extends Laravel's base `Relation` class.
-There is no foreign key between the two tables. The link is distance, so none of the built-in relations fit.
-
-- **SQL step:** only load incidents inside a square around the outer circle (`whereBetween` on lat/lng).
-- **PHP step:** calculate the exact distance and keep `0.5 km < distance <= 2 km`, sorted nearest first.
-  SQLite has no `cos`/`sqrt` by default, so this part is in PHP.
-- Works with `$hood->incidents`, `$hood->incidents()->get()` and eager loading `Neighborhood::with('incidents')`.
-  Eager loading runs one query for all neighborhoods, and `match()` gives each one only its own ring.
-
-### The trap: which centroid?
-
-My first try used the area centroid of the polygon. That gave extra letters before the flag. NB-7A2F is
-a trapezoid, so different "center" definitions give points about 100 m apart. The incidents also have a
-`classification` field, `alpha-N` or `noise-N`, which made it easy to check:
-
-| Center used | Result |
-|---|---|
-| Average of the vertices | `OWUVPALCMGTWVKINATE{...}` |
-| Area centroid | `VLGREDOLAPVWUWTGCKVMINATE{...}` |
-| **Middle of the bounding box** | `ILLUMINATE{centroid_of_chaos_33916059}` |
-
-Measured from the bounding-box center, the `noise` incidents sit at 0.45 to 0.50 km, inside the hole.
-The `alpha` ones are evenly spaced from 0.54 to 1.96 km. So the data was clearly built around that point,
-and I use it as the centroid.
-
-Distance uses a flat approximation: 1° = 111 km, with longitude scaled by `cos(lat)`. At 2 km the
-difference from Haversine is under 0.2%.
-
-## Tests
+**Run the tests**
 
 ```bash
 php artisan test
 ```
 
-They cover point/polygon parsing, the centroid, the ring filter and ordering, and eager loading.
+## Stages 0 and 1
+
+No code was needed:
+
+- **Stage 0:** the `illuminate` CLI showed "Something Went Wrong". The flag was in a comment in its source code.
+- **Stage 1:** the trait Laravel uses to forward method calls is `ForwardsCalls`. The answer was the md5 of
+  `src/Illuminate/Support/Traits/ForwardsCalls.php` at tag `v10.14.0`.
+
+## How it works
+
+### Connecting to the remote database (Stage 2)
+
+The database only accepts connections from inside the server, so `RemoteDatabase`:
+
+1. gets the SSH key and DB login from the API (`ChallengeApi`)
+2. opens an SSH tunnel: local port `15433` goes to the server's `localhost:5432`
+3. adds it as a normal Laravel connection, so the code can use `DB` and the query builder
+4. closes the tunnel and deletes the key file when done, even if something fails
+
+`illuminate:hunt` then searches every column of every table for `ILLUMINATE{`.
+
+### Importing (Stage 3)
+
+`illuminate:import` copies the remote tables into SQLite in chunks of 500 rows.
+
+- Postgres sends `point` and `polygon` as text, e.g. `(33.33,44.35)`. `PostgresGeometry` turns that into numbers.
+- The incident code is in `metadata.incident.code`.
+- The centroid of each neighborhood is calculated once here and saved.
+- It uses `updateOrCreate` inside a transaction, so running it again is safe.
+
+### The `Donut` relation
+
+```php
+// app/Models/Neighborhood.php
+public function incidents(): Donut
+{
+    return new Donut($this, innerKm: 0.5, outerKm: 2.0);
+}
+```
+
+`Donut` extends Laravel's base `Relation` class, the same one `HasOne` and `BelongsToMany` extend.
+The two tables have no foreign key. They are linked by distance, so a custom relation is needed.
+
+It works in two steps:
+
+1. **SQL:** only load incidents inside a square around the outer circle. This skips far-away rows.
+2. **PHP:** calculate the real distance, keep `0.5 km < distance <= 2 km`, and sort nearest first.
+
+All of these work and return the same result:
+
+```php
+$neighborhood->incidents;
+$neighborhood->incidents()->get();
+Neighborhood::with('incidents')->get(); // eager loading, one query for all neighborhoods
+```
+
+### The trap: which centroid?
+
+My first try used the area centroid of the polygon, and the result had extra letters before the flag.
+NB-7A2F is not a rectangle, so different ways of finding its "center" give different points.
+
+Each incident has a `classification` that is either `alpha-N` or `noise-N`, so I compared the options:
+
+| Center | Result |
+|---|---|
+| Average of the corners | `OWUVPALCMGTWVKINATE{...}` |
+| Area centroid | `VLGREDOLAPVWUWTGCKVMINATE{...}` |
+| **Middle of the bounding box** | `ILLUMINATE{centroid_of_chaos_33916059}` |
+
+Measured from the middle of the bounding box, the `noise` incidents are all between 0.45 and 0.50 km,
+inside the hole. The `alpha` incidents are evenly spaced from 0.54 to 1.96 km. So the data was built
+around that point.
+
+Distance uses a simple flat formula: 1° ≈ 111 km, with longitude scaled by `cos(latitude)`. For a few
+km this is accurate enough.
+
+## Project structure
+
+```
+app/
+├── Console/Commands/
+│   ├── HuntRemoteFlag.php     illuminate:hunt
+│   ├── ImportGisData.php      illuminate:import
+│   ├── RevealDonutFlag.php    illuminate:donut
+│   └── SubmitRepo.php         illuminate:submit-repo
+├── Models/
+│   ├── Neighborhood.php
+│   └── Incident.php
+├── Relations/
+│   └── Donut.php              the custom relation
+├── Services/Illuminate/
+│   ├── ChallengeApi.php       API calls
+│   └── RemoteDatabase.php     SSH tunnel + DB connection
+└── Support/
+    ├── Geo.php                distance, centroid, bounding box
+    └── PostgresGeometry.php   parse point / polygon text
+```
