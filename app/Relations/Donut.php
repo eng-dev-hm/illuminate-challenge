@@ -12,7 +12,7 @@ use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Relations\Relation;
 
 /**
- * Incidents that are between $innerKm and $outerKm from a neighborhood's center.
+ * Incidents that are between $fromKm and $toKm from a neighborhood's center.
  *
  * There is no foreign key between the tables, so we extend the base Relation
  * class (the same parent HasOne / BelongsToMany use) and decide ourselves
@@ -25,8 +25,8 @@ class Donut extends Relation
 {
     public function __construct(
         Neighborhood $neighborhood,
-        protected float $innerKm,
-        protected float $outerKm,
+        protected float $fromKm,
+        protected float $toKm,
     ) {
         parent::__construct(Incident::query(), $neighborhood);
     }
@@ -93,14 +93,14 @@ class Donut extends Relation
         [$minLat, $maxLat, $minLng, $maxLng] = Geo::box(
             $neighborhood->centroid_lat,
             $neighborhood->centroid_lng,
-            $this->outerKm,
+            $this->toKm,
         );
 
         $query->whereBetween('lat', [$minLat, $maxLat])
             ->whereBetween('lng', [$minLng, $maxLng]);
     }
 
-    /** Keep incidents where inner < distance <= outer, nearest first. */
+    /** Keep incidents where from < distance <= to, nearest first. */
     protected function ring(Collection $incidents, Neighborhood $neighborhood): Collection
     {
         return $incidents
@@ -115,7 +115,7 @@ class Donut extends Relation
 
                 return $incident;
             })
-            ->filter(fn (Incident $i) => $i->distance_km > $this->innerKm && $i->distance_km <= $this->outerKm)
+            ->filter(fn (Incident $i) => $i->distance_km > $this->fromKm && $i->distance_km <= $this->toKm)
             ->sortBy('distance_km')
             ->values();
     }

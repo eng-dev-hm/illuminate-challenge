@@ -14,13 +14,13 @@ class AppServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->app->singleton(ChallengeApi::class, fn () => new ChallengeApi(
-            (string) config('services.bitech.api_url'),
-            config('services.bitech.token'),
+            (string) config('services.illuminate.api_url'),
+            config('services.illuminate.token'),
         ));
 
         $this->app->bind(RemoteDatabase::class, fn ($app) => new RemoteDatabase(
             $app->make(ChallengeApi::class),
-            (int) config('services.bitech.tunnel_port'),
+            (int) config('services.illuminate.tunnel_port'),
         ));
     }
 

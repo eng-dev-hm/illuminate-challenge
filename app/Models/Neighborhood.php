@@ -17,9 +17,9 @@ use Illuminate\Database\Eloquent\Model;
  */
 class Neighborhood extends Model
 {
-    public const DONUT_INNER_KM = 0.5;
+    public const DONUT_FROM_KM = 0.5;
 
-    public const DONUT_OUTER_KM = 2.0;
+    public const DONUT_TO_KM = 2.0;
 
     public $incrementing = false;
 
@@ -43,6 +43,6 @@ class Neighborhood extends Model
      */
     public function incidents(): Donut
     {
-        return new Donut($this, innerKm: self::DONUT_INNER_KM, outerKm: self::DONUT_OUTER_KM);
+        return new Donut($this, fromKm: self::DONUT_FROM_KM, toKm: self::DONUT_TO_KM);
     }
 }

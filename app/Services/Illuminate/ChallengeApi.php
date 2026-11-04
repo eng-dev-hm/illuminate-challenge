@@ -41,7 +41,7 @@ final class ChallengeApi
     private function request(): PendingRequest
     {
         if (blank($this->token)) {
-            throw new RuntimeException('BITECH_TOKEN is not set.');
+            throw new RuntimeException('ILLUMINATE_TOKEN is not set.');
         }
 
         return Http::baseUrl($this->baseUrl)
