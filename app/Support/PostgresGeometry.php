@@ -4,35 +4,32 @@ declare(strict_types=1);
 
 namespace App\Support;
 
-use InvalidArgumentException;
-
 /**
- * Parses the text form of PostgreSQL geometric types.
- * The challenge data stores them as (lat, lng).
+ * Postgres sends geometric types as text. In this database they are (lat, lng).
  */
-final class PostgresGeometry
+class PostgresGeometry
 {
-    private const NUMBER = '[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?';
-
-    /** @return array{0: float, 1: float} */
+    /**
+     * "(33.33,44.35)" => [33.33, 44.35]
+     *
+     * @return array{0: float, 1: float}
+     */
     public static function point(string $value): array
     {
-        if (! preg_match('/^\s*\(\s*('.self::NUMBER.')\s*,\s*('.self::NUMBER.')\s*\)\s*$/', $value, $m)) {
-            throw new InvalidArgumentException("Invalid point: {$value}");
-        }
+        [$lat, $lng] = explode(',', trim($value, '() '));
 
-        return [(float) $m[1], (float) $m[2]];
+        return [(float) $lat, (float) $lng];
     }
 
-    /** @return list<array{0: float, 1: float}> */
+    /**
+     * "((33.32,44.34),(33.34,44.365),...)" => [[33.32, 44.34], [33.34, 44.365], ...]
+     *
+     * @return array<int, array{0: float, 1: float}>
+     */
     public static function polygon(string $value): array
     {
-        preg_match_all('/\(\s*('.self::NUMBER.')\s*,\s*('.self::NUMBER.')\s*\)/', $value, $m, PREG_SET_ORDER);
+        $points = explode('),(', trim($value, '() '));
 
-        if (count($m) < 3) {
-            throw new InvalidArgumentException("Invalid polygon: {$value}");
-        }
-
-        return array_map(fn (array $p) => [(float) $p[1], (float) $p[2]], $m);
+        return array_map(fn (string $point) => self::point($point), $points);
     }
 }

@@ -47,7 +47,7 @@ The database is only reachable from the server itself, so `RemoteDatabase`:
 - Postgres sends `point` and `polygon` as text like `(33.33,44.35)`. `PostgresGeometry` turns them into `[lat, lng]` arrays.
 - The incident code comes from `metadata.incident.code`.
 - The centroid is calculated once at import time and stored in the table.
-- The import uses chunks, upserts and one transaction, so running it twice is safe.
+- Everything runs in one transaction with `updateOrCreate`, so running it twice is safe.
 
 ### The `Donut` relation
 

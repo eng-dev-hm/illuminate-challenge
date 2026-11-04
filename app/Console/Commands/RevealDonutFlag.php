@@ -6,14 +6,14 @@ namespace App\Console\Commands;
 
 use App\Models\Incident;
 use App\Models\Neighborhood;
-use Illuminate\Console\Attributes\Description;
-use Illuminate\Console\Attributes\Signature;
 use Illuminate\Console\Command;
 
-#[Signature('illuminate:donut {neighborhood=NB-7A2F : Neighborhood name} {--details : Print every matching incident}')]
-#[Description('Stage 3: concatenate the codes of incidents in the donut, nearest first')]
 class RevealDonutFlag extends Command
 {
+    protected $signature = 'illuminate:donut {neighborhood=NB-7A2F : Neighborhood name} {--details : Print every matching incident}';
+
+    protected $description = 'Stage 3: concatenate the codes of incidents in the donut, nearest first';
+
     public function handle(): int
     {
         $neighborhood = Neighborhood::firstWhere('name', $this->argument('neighborhood'));
