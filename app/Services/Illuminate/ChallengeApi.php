@@ -26,6 +26,18 @@ final class ChallengeApi
         return $this->request()->get('/challenge/ssh-key')->throw()->json();
     }
 
+    /**
+     * @return array<string, mixed>
+     */
+    public function submitRepo(string $repoUrl, string $cvPath): array
+    {
+        $response = $this->request()
+            ->attach('cv', fopen($cvPath, 'r'), basename($cvPath), ['Content-Type' => 'application/pdf'])
+            ->post('/challenge/submit-repo', ['repo_url' => $repoUrl]);
+
+        return $response->throw()->json() ?? ['status' => $response->status()];
+    }
+
     private function request(): PendingRequest
     {
         if (blank($this->token)) {
